@@ -15,8 +15,7 @@ import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { showToast } from "@opencode-ai/ui/toast"
 
-type ServerStatus = { healthy: boolean; version?: string }
-type HealthStatus = ServerStatus & { unauthorized?: boolean }
+type ServerStatus = { healthy: boolean; version?: string; unauthorized?: boolean }
 
 interface AddRowProps {
   value: string
@@ -44,7 +43,7 @@ async function checkHealth(
   url: string,
   platform: ReturnType<typeof usePlatform>,
   authorization?: string,
-): Promise<HealthStatus> {
+): Promise<ServerStatus> {
   const signal = (AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }).timeout?.(3000)
   const response = await (platform.fetch ?? fetch)(
     new Request(`${url}/global/health`, {
@@ -273,6 +272,21 @@ export function DialogSelectServer() {
   })
 
   async function select(value: string, persist?: boolean) {
+    const current = store.status[value]
+    if (!persist && current?.healthy === false && current.unauthorized) {
+      const existing = server.auth.get(value)
+      const password = window.prompt(
+        "Server password for Basic auth. Leave empty to clear.",
+        existing?.type === "basic" ? existing.password : "",
+      )
+      if (password === null) return
+      const trimmed = password.trim()
+      if (!trimmed) server.auth.clear(value)
+      if (trimmed) server.auth.setBasic(trimmed, value)
+      const next = await checkHealth(value, platform, server.auth.header(value))
+      setStore("status", value, next)
+      if (!next.healthy) return
+    }
     if (!persist && store.status[value]?.healthy === false) return
     dialog.close()
     if (persist) {
