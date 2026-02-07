@@ -78,6 +78,7 @@ export namespace Server {
           })
         })
         .use((c, next) => {
+          if (c.req.method === "OPTIONS") return next()
           const password = Flag.OPENCODE_SERVER_PASSWORD
           if (!password) return next()
           const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
@@ -119,6 +120,8 @@ export namespace Server {
 
               return
             },
+            allowHeaders: ["Authorization", "Content-Type", "X-Opencode-Directory"],
+            exposeHeaders: ["WWW-Authenticate"],
           }),
         )
         .route("/global", GlobalRoutes())

@@ -1,4 +1,4 @@
-import { createResource, createEffect, createMemo, onCleanup, Show } from "solid-js"
+import { createResource, createEffect, createMemo, onCleanup, Show, createSignal } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
@@ -6,15 +6,17 @@ import { List } from "@opencode-ai/ui/list"
 import { Button } from "@opencode-ai/ui/button"
 import { IconButton } from "@opencode-ai/ui/icon-button"
 import { TextField } from "@opencode-ai/ui/text-field"
-import { normalizeServerUrl, useServer } from "@/context/server"
+import { normalizeServerUrl, serverDisplayName, useServer } from "@/context/server"
 import { usePlatform } from "@/context/platform"
 import { useNavigate } from "@solidjs/router"
 import { useLanguage } from "@/context/language"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
+import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { showToast } from "@opencode-ai/ui/toast"
-import { ServerRow } from "@/components/server/server-row"
-import { checkServerHealth, type ServerHealth } from "@/utils/server-health"
+
+type ServerStatus = { healthy: boolean; version?: string }
+type HealthStatus = ServerStatus & { unauthorized?: boolean }
 
 interface AddRowProps {
   value: string
@@ -36,6 +38,28 @@ interface EditRowProps {
   onChange: (value: string) => void
   onKeyDown: (event: KeyboardEvent) => void
   onBlur: () => void
+}
+
+async function checkHealth(
+  url: string,
+  platform: ReturnType<typeof usePlatform>,
+  authorization?: string,
+): Promise<HealthStatus> {
+  const signal = (AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }).timeout?.(3000)
+  const response = await (platform.fetch ?? fetch)(
+    new Request(`${url}/global/health`, {
+      signal,
+      headers: authorization ? { Authorization: authorization } : undefined,
+    }),
+  ).catch(() => undefined)
+  if (!response) return { healthy: false }
+  if (response.status === 401) return { healthy: false, unauthorized: true }
+  if (!response.ok) return { healthy: false }
+  const body = await response.json().catch(() => undefined)
+  return {
+    healthy: body?.healthy === true,
+    version: body?.version,
+  }
 }
 
 function AddRow(props: AddRowProps) {
@@ -116,7 +140,7 @@ export function DialogSelectServer() {
   const globalSDK = useGlobalSDK()
   const language = useLanguage()
   const [store, setStore] = createStore({
-    status: {} as Record<string, ServerHealth | undefined>,
+    status: {} as Record<string, ServerStatus | undefined>,
     addServer: {
       url: "",
       adding: false,
@@ -150,7 +174,6 @@ export function DialogSelectServer() {
     { initialValue: null },
   )
   const canDefault = createMemo(() => !!platform.getDefaultServerUrl && !!platform.setDefaultServerUrl)
-  const fetcher = platform.fetch ?? globalThis.fetch
 
   const looksComplete = (value: string) => {
     const normalized = normalizeServerUrl(value)
@@ -166,7 +189,7 @@ export function DialogSelectServer() {
     if (!looksComplete(value)) return
     const normalized = normalizeServerUrl(value)
     if (!normalized) return
-    const result = await checkServerHealth(normalized, fetcher)
+    const result = await checkHealth(normalized, platform, server.auth.header(normalized))
     setStatus(result.healthy)
   }
 
@@ -194,6 +217,11 @@ export function DialogSelectServer() {
     const nextActive = active === original ? next : active
 
     server.add(next)
+    const auth = server.auth.get(original)
+    if (auth?.type === "basic") {
+      server.auth.setBasic(auth.password, next)
+      server.auth.clear(original)
+    }
     if (nextActive) server.setActive(nextActive)
     server.remove(original)
   }
@@ -213,7 +241,7 @@ export function DialogSelectServer() {
     if (!list.length) return list
     const active = current()
     const order = new Map(list.map((url, index) => [url, index] as const))
-    const rank = (value?: ServerHealth) => {
+    const rank = (value?: ServerStatus) => {
       if (value?.healthy === true) return 0
       if (value?.healthy === false) return 2
       return 1
@@ -228,10 +256,10 @@ export function DialogSelectServer() {
   })
 
   async function refreshHealth() {
-    const results: Record<string, ServerHealth> = {}
+    const results: Record<string, ServerStatus> = {}
     await Promise.all(
       items().map(async (url) => {
-        results[url] = await checkServerHealth(url, fetcher)
+        results[url] = await checkHealth(url, platform, server.auth.header(url))
       }),
     )
     setStore("status", reconcile(results))
@@ -286,12 +314,20 @@ export function DialogSelectServer() {
 
     setStore("addServer", { adding: true, error: "" })
 
-    const result = await checkServerHealth(normalized, fetcher)
+    let result = await checkHealth(normalized, platform)
+    if (!result.healthy && result.unauthorized) {
+      const password = window.prompt("Server password for Basic auth:", "")
+      if (password === null) {
+        setStore("addServer", { adding: false })
+        return
+      }
+      server.auth.setBasic(password, normalized)
+      result = await checkHealth(normalized, platform, server.auth.header(normalized))
+    }
     setStore("addServer", { adding: false })
 
     if (!result.healthy) {
       setStore("addServer", { error: language.t("dialog.server.add.error") })
-      return
     }
 
     resetAdd()
@@ -313,12 +349,20 @@ export function DialogSelectServer() {
 
     setStore("editServer", { busy: true, error: "" })
 
-    const result = await checkServerHealth(normalized, fetcher)
+    let result = await checkHealth(normalized, platform)
+    if (!result.healthy && result.unauthorized) {
+      const password = window.prompt("Server password for Basic auth:", "")
+      if (password === null) {
+        setStore("editServer", { busy: false })
+        return
+      }
+      server.auth.setBasic(password, normalized)
+      result = await checkHealth(normalized, platform, server.auth.header(normalized))
+    }
     setStore("editServer", { busy: false })
 
     if (!result.healthy) {
       setStore("editServer", { error: language.t("dialog.server.add.error") })
-      return
     }
 
     replaceServer(original, normalized)
@@ -355,9 +399,6 @@ export function DialogSelectServer() {
 
   async function handleRemove(url: string) {
     server.remove(url)
-    if ((await platform.getDefaultServerUrl?.()) === url) {
-      platform.setDefaultServerUrl?.(null)
-    }
   }
 
   return (
@@ -399,6 +440,35 @@ export function DialogSelectServer() {
           }
         >
           {(i) => {
+            const [truncated, setTruncated] = createSignal(false)
+            let nameRef: HTMLSpanElement | undefined
+            let versionRef: HTMLSpanElement | undefined
+
+            const check = () => {
+              const nameTruncated = nameRef ? nameRef.scrollWidth > nameRef.clientWidth : false
+              const versionTruncated = versionRef ? versionRef.scrollWidth > versionRef.clientWidth : false
+              setTruncated(nameTruncated || versionTruncated)
+            }
+
+            createEffect(() => {
+              check()
+              window.addEventListener("resize", check)
+              onCleanup(() => window.removeEventListener("resize", check))
+            })
+
+            const tooltipValue = () => {
+              const name = serverDisplayName(i)
+              const version = store.status[i]?.version
+              return (
+                <span class="flex items-center gap-2">
+                  <span>{name}</span>
+                  <Show when={version}>
+                    <span class="text-text-invert-base">{version}</span>
+                  </Show>
+                </span>
+              )
+            }
+
             return (
               <div class="flex items-center gap-3 min-w-0 flex-1 group/item">
                 <Show
@@ -416,19 +486,34 @@ export function DialogSelectServer() {
                     />
                   }
                 >
-                  <ServerRow
-                    url={i}
-                    status={store.status[i]}
-                    dimmed={store.status[i]?.healthy === false}
-                    class="flex items-center gap-3 px-4 min-w-0 flex-1"
-                    badge={
+                  <Tooltip value={tooltipValue()} placement="top" inactive={!truncated()}>
+                    <div
+                      class="flex items-center gap-3 px-4 min-w-0 flex-1"
+                      classList={{ "opacity-50": store.status[i]?.healthy === false }}
+                    >
+                      <div
+                        classList={{
+                          "size-1.5 rounded-full shrink-0": true,
+                          "bg-icon-success-base": store.status[i]?.healthy === true,
+                          "bg-icon-critical-base": store.status[i]?.healthy === false,
+                          "bg-border-weak-base": store.status[i] === undefined,
+                        }}
+                      />
+                      <span ref={nameRef} class="truncate">
+                        {serverDisplayName(i)}
+                      </span>
+                      <Show when={store.status[i]?.version}>
+                        <span ref={versionRef} class="text-text-weak text-14-regular truncate">
+                          {store.status[i]?.version}
+                        </span>
+                      </Show>
                       <Show when={defaultUrl() === i}>
                         <span class="text-text-weak bg-surface-base text-14-regular px-1.5 rounded-xs">
                           {language.t("dialog.server.status.default")}
                         </span>
                       </Show>
-                    }
-                  />
+                    </div>
+                  </Tooltip>
                 </Show>
                 <Show when={store.editServer.id !== i}>
                   <div class="flex items-center justify-center gap-5 pl-4">
@@ -458,6 +543,26 @@ export function DialogSelectServer() {
                             }}
                           >
                             <DropdownMenu.ItemLabel>{language.t("dialog.server.menu.edit")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            onSelect={async () => {
+                              const current = server.auth.get(i)
+                              const password = window.prompt(
+                                "Server password for Basic auth. Leave empty to clear.",
+                                current?.type === "basic" ? current.password : "",
+                              )
+                              if (password === null) return
+                              const value = password.trim()
+                              if (!value) {
+                                server.auth.clear(i)
+                              } else {
+                                server.auth.setBasic(value, i)
+                              }
+                              const status = await checkHealth(i, platform, server.auth.header(i))
+                              setStore("status", i, status)
+                            }}
+                          >
+                            <DropdownMenu.ItemLabel>Server password</DropdownMenu.ItemLabel>
                           </DropdownMenu.Item>
                           <Show when={canDefault() && defaultUrl() !== i}>
                             <DropdownMenu.Item
