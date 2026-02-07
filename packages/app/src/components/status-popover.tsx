@@ -13,23 +13,26 @@ import { useSDK } from "@/context/sdk"
 import { normalizeServerUrl, serverDisplayName, useServer } from "@/context/server"
 import { usePlatform } from "@/context/platform"
 import { useLanguage } from "@/context/language"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
 import { DialogSelectServer } from "./dialog-select-server"
 import { showToast } from "@opencode-ai/ui/toast"
 
 type ServerStatus = { healthy: boolean; version?: string }
 
-async function checkHealth(url: string, platform: ReturnType<typeof usePlatform>): Promise<ServerStatus> {
+async function checkHealth(
+  url: string,
+  platform: ReturnType<typeof usePlatform>,
+  authorization?: string,
+): Promise<ServerStatus> {
   const signal = (AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }).timeout?.(3000)
-  const sdk = createOpencodeClient({
-    baseUrl: url,
-    fetch: platform.fetch,
-    signal,
-  })
-  return sdk.global
-    .health()
-    .then((x) => ({ healthy: x.data?.healthy === true, version: x.data?.version }))
-    .catch(() => ({ healthy: false }))
+  const response = await (platform.fetch ?? fetch)(
+    new Request(`${url}/global/health`, {
+      signal,
+      headers: authorization ? { Authorization: authorization } : undefined,
+    }),
+  ).catch(() => undefined)
+  if (!response?.ok) return { healthy: false }
+  const body = await response.json().catch(() => undefined)
+  return { healthy: body?.healthy === true, version: body?.version }
 }
 
 export function StatusPopover() {
@@ -78,7 +81,7 @@ export function StatusPopover() {
     const results: Record<string, ServerStatus> = {}
     await Promise.all(
       servers().map(async (url) => {
-        results[url] = await checkHealth(url, platform)
+        results[url] = await checkHealth(url, platform, server.auth.header(url))
       }),
     )
     setStore("status", reconcile(results))

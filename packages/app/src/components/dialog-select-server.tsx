@@ -8,7 +8,6 @@ import { IconButton } from "@opencode-ai/ui/icon-button"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { normalizeServerUrl, serverDisplayName, useServer } from "@/context/server"
 import { usePlatform } from "@/context/platform"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
 import { useNavigate } from "@solidjs/router"
 import { useLanguage } from "@/context/language"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
@@ -17,6 +16,7 @@ import { useGlobalSDK } from "@/context/global-sdk"
 import { showToast } from "@opencode-ai/ui/toast"
 
 type ServerStatus = { healthy: boolean; version?: string }
+type HealthStatus = ServerStatus & { unauthorized?: boolean }
 
 interface AddRowProps {
   value: string
@@ -40,17 +40,26 @@ interface EditRowProps {
   onBlur: () => void
 }
 
-async function checkHealth(url: string, platform: ReturnType<typeof usePlatform>): Promise<ServerStatus> {
+async function checkHealth(
+  url: string,
+  platform: ReturnType<typeof usePlatform>,
+  authorization?: string,
+): Promise<HealthStatus> {
   const signal = (AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }).timeout?.(3000)
-  const sdk = createOpencodeClient({
-    baseUrl: url,
-    fetch: platform.fetch,
-    signal,
-  })
-  return sdk.global
-    .health()
-    .then((x) => ({ healthy: x.data?.healthy === true, version: x.data?.version }))
-    .catch(() => ({ healthy: false }))
+  const response = await (platform.fetch ?? fetch)(
+    new Request(`${url}/global/health`, {
+      signal,
+      headers: authorization ? { Authorization: authorization } : undefined,
+    }),
+  ).catch(() => undefined)
+  if (!response) return { healthy: false }
+  if (response.status === 401) return { healthy: false, unauthorized: true }
+  if (!response.ok) return { healthy: false }
+  const body = await response.json().catch(() => undefined)
+  return {
+    healthy: body?.healthy === true,
+    version: body?.version,
+  }
 }
 
 function AddRow(props: AddRowProps) {
@@ -180,7 +189,7 @@ export function DialogSelectServer() {
     if (!looksComplete(value)) return
     const normalized = normalizeServerUrl(value)
     if (!normalized) return
-    const result = await checkHealth(normalized, platform)
+    const result = await checkHealth(normalized, platform, server.auth.header(normalized))
     setStatus(result.healthy)
   }
 
@@ -208,6 +217,11 @@ export function DialogSelectServer() {
     const nextActive = active === original ? next : active
 
     server.add(next)
+    const auth = server.auth.get(original)
+    if (auth?.type === "basic") {
+      server.auth.setBasic(auth.password, next)
+      server.auth.clear(original)
+    }
     if (nextActive) server.setActive(nextActive)
     server.remove(original)
   }
@@ -245,7 +259,7 @@ export function DialogSelectServer() {
     const results: Record<string, ServerStatus> = {}
     await Promise.all(
       items().map(async (url) => {
-        results[url] = await checkHealth(url, platform)
+        results[url] = await checkHealth(url, platform, server.auth.header(url))
       }),
     )
     setStore("status", reconcile(results))
@@ -300,12 +314,20 @@ export function DialogSelectServer() {
 
     setStore("addServer", { adding: true, error: "" })
 
-    const result = await checkHealth(normalized, platform)
+    let result = await checkHealth(normalized, platform)
+    if (!result.healthy && result.unauthorized) {
+      const password = window.prompt("Server password for Basic auth:", "")
+      if (password === null) {
+        setStore("addServer", { adding: false })
+        return
+      }
+      server.auth.setBasic(password, normalized)
+      result = await checkHealth(normalized, platform, server.auth.header(normalized))
+    }
     setStore("addServer", { adding: false })
 
     if (!result.healthy) {
       setStore("addServer", { error: language.t("dialog.server.add.error") })
-      return
     }
 
     resetAdd()
@@ -327,12 +349,20 @@ export function DialogSelectServer() {
 
     setStore("editServer", { busy: true, error: "" })
 
-    const result = await checkHealth(normalized, platform)
+    let result = await checkHealth(normalized, platform)
+    if (!result.healthy && result.unauthorized) {
+      const password = window.prompt("Server password for Basic auth:", "")
+      if (password === null) {
+        setStore("editServer", { busy: false })
+        return
+      }
+      server.auth.setBasic(password, normalized)
+      result = await checkHealth(normalized, platform, server.auth.header(normalized))
+    }
     setStore("editServer", { busy: false })
 
     if (!result.healthy) {
       setStore("editServer", { error: language.t("dialog.server.add.error") })
-      return
     }
 
     replaceServer(original, normalized)
@@ -513,6 +543,26 @@ export function DialogSelectServer() {
                             }}
                           >
                             <DropdownMenu.ItemLabel>{language.t("dialog.server.menu.edit")}</DropdownMenu.ItemLabel>
+                          </DropdownMenu.Item>
+                          <DropdownMenu.Item
+                            onSelect={async () => {
+                              const current = server.auth.get(i)
+                              const password = window.prompt(
+                                "Server password for Basic auth. Leave empty to clear.",
+                                current?.type === "basic" ? current.password : "",
+                              )
+                              if (password === null) return
+                              const value = password.trim()
+                              if (!value) {
+                                server.auth.clear(i)
+                              } else {
+                                server.auth.setBasic(value, i)
+                              }
+                              const status = await checkHealth(i, platform, server.auth.header(i))
+                              setStore("status", i, status)
+                            }}
+                          >
+                            <DropdownMenu.ItemLabel>Server password</DropdownMenu.ItemLabel>
                           </DropdownMenu.Item>
                           <Show when={canDefault() && defaultUrl() !== i}>
                             <DropdownMenu.Item

@@ -53,6 +53,7 @@ import { SessionContextUsage } from "@/components/session-context-usage"
 import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { useGlobalSync } from "@/context/global-sync"
+import { useGlobalSDK } from "@/context/global-sdk"
 import { usePlatform } from "@/context/platform"
 import { createOpencodeClient, type Message, type Part } from "@opencode-ai/sdk/v2/client"
 import { Binary } from "@opencode-ai/util/binary"
@@ -120,6 +121,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
   const sync = useSync()
   const globalSync = useGlobalSync()
+  const globalSDK = useGlobalSDK()
   const platform = usePlatform()
   const local = useLocal()
   const files = useFile()
@@ -1201,7 +1203,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       if (sessionDirectory !== projectDirectory) {
         client = createOpencodeClient({
           baseUrl: sdk.url,
-          fetch: platform.fetch,
+          fetch: globalSDK.fetch,
           directory: sessionDirectory,
           throwOnError: true,
         })

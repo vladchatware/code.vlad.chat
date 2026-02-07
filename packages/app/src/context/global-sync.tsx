@@ -41,7 +41,6 @@ import {
 } from "solid-js"
 import { showToast } from "@opencode-ai/ui/toast"
 import { getFilename } from "@opencode-ai/util/path"
-import { usePlatform } from "./platform"
 import { useLanguage } from "@/context/language"
 import { Persist, persisted } from "@/utils/persist"
 
@@ -133,7 +132,6 @@ function normalizeProviderList(input: ProviderListResponse): ProviderListRespons
 
 function createGlobalSync() {
   const globalSDK = useGlobalSDK()
-  const platform = usePlatform()
   const language = useLanguage()
   const owner = getOwner()
   if (!owner) throw new Error("GlobalSync must be created within owner")
@@ -148,7 +146,7 @@ function createGlobalSync() {
 
     const sdk = createOpencodeClient({
       baseUrl: globalSDK.url,
-      fetch: platform.fetch,
+      fetch: globalSDK.fetch,
       directory,
       throwOnError: true,
     })

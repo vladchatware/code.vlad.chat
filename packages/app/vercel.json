@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/oc/:path*",
+      "destination": "https://phantom-buyer-get-estate.trycloudflare.com/:path*"
+    }
+  ]
+}

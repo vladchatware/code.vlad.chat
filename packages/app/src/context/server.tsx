@@ -6,6 +6,7 @@ import { usePlatform } from "@/context/platform"
 import { Persist, persisted } from "@/utils/persist"
 
 type StoredProject = { worktree: string; expanded: boolean }
+type StoredAuth = { type: "basic"; password: string }
 
 export function normalizeServerUrl(input: string) {
   const trimmed = input.trim()
@@ -37,6 +38,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         list: [] as string[],
         projects: {} as Record<string, StoredProject[]>,
         lastProject: {} as Record<string, string>,
+        auth: {} as Record<string, StoredAuth>,
       }),
     )
 
@@ -80,8 +82,18 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
 
       batch(() => {
         setStore("list", list)
+        setStore("auth", url, undefined!)
         setState("active", next)
       })
+    }
+
+    function authHeader(input?: string) {
+      const url = normalizeServerUrl(input ?? state.active)
+      if (!url) return
+      const entry = store.auth[url]
+      if (!entry) return
+      if (entry.type !== "basic") return
+      return `Basic ${btoa(`opencode:${entry.password}`)}`
     }
 
     createEffect(() => {
@@ -92,13 +104,25 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       setState("active", url)
     })
 
+    createEffect(() => {
+      if (typeof window === "undefined") return
+      window.__OPENCODE__ ??= {}
+      const entry = store.auth[state.active]
+      window.__OPENCODE__.serverPassword = entry?.type === "basic" ? entry.password : undefined
+    })
+
     const isReady = createMemo(() => ready() && !!state.active)
 
     const check = (url: string) => {
       const signal = (AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal }).timeout?.(3000)
       const sdk = createOpencodeClient({
         baseUrl: url,
-        fetch: platform.fetch,
+        fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
+          const req = new Request(input, init)
+          const auth = authHeader(url)
+          if (auth && !req.headers.has("authorization")) req.headers.set("Authorization", auth)
+          return (platform.fetch ?? fetch)(req)
+        }) as typeof fetch,
         signal,
       })
       return sdk.global
@@ -158,6 +182,32 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       setActive,
       add,
       remove,
+      auth: {
+        get(url?: string) {
+          const normalized = normalizeServerUrl(url ?? state.active)
+          if (!normalized) return
+          return store.auth[normalized]
+        },
+        setBasic(password: string, url?: string) {
+          const normalized = normalizeServerUrl(url ?? state.active)
+          if (!normalized) return
+          const value = password.trim()
+          if (!value) {
+            setStore("auth", normalized, undefined!)
+            return
+          }
+          setStore("auth", normalized, {
+            type: "basic",
+            password: value,
+          })
+        },
+        clear(url?: string) {
+          const normalized = normalizeServerUrl(url ?? state.active)
+          if (!normalized) return
+          setStore("auth", normalized, undefined!)
+        },
+        header: authHeader,
+      },
       projects: {
         list: projectsList,
         open(directory: string) {
