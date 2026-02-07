@@ -43,7 +43,7 @@ export const Logo = (props: { class?: string }) => {
         <path d="M0 6H6V36H0V6Z" fill="var(--icon-base)" />
         <path d="M18 6H24V36H18V6Z" fill="var(--icon-base)" />
         <path d="M6 24H18V30H6V24Z" fill="var(--icon-weak-base)" />
-        <path d="M30 6H36V30H54V36H30V6Z" fill="var(--icon-base)" />
+        <path d="M30 0H36V30H54V36H30V0Z" fill="var(--icon-base)" />
         <path d="M36 24H48V30H36V24Z" fill="var(--icon-weak-base)" />
         <path d="M60 12H66V36H60V12Z" fill="var(--icon-base)" />
         <path d="M78 12H84V36H78V12Z" fill="var(--icon-base)" />
