@@ -121,12 +121,18 @@ export namespace Server {
               if (/^https:\/\/([a-z0-9-]+\.)*opencode\.ai$/.test(input)) {
                 return input
               }
+              // *.vlad.chat (https only)
+              if (/^https:\/\/([a-z0-9-]+\.)*vlad\.chat$/.test(input)) {
+                return input
+              }
               if (_corsWhitelist.includes(input)) {
                 return input
               }
 
               return
             },
+            allowHeaders: ["Authorization", "Content-Type", "X-Opencode-Directory"],
+            exposeHeaders: ["WWW-Authenticate"],
           }),
         )
         .route("/global", GlobalRoutes())
