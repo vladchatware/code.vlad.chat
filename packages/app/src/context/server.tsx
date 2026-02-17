@@ -7,6 +7,7 @@ import { Persist, persisted } from "@/utils/persist"
 
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredAuth = { type: "basic"; password: string }
+const HEALTH_POLL_INTERVAL_MS = 10_000
 
 export function normalizeServerUrl(input: string) {
   const trimmed = input.trim()
@@ -29,13 +30,14 @@ function projectsKey(url: string) {
 
 export const { use: useServer, provider: ServerProvider } = createSimpleContext({
   name: "Server",
-  init: (props: { defaultUrl: string }) => {
+  init: (props: { defaultUrl: string; isSidecar?: boolean }) => {
     const platform = usePlatform()
 
     const [store, setStore, _, ready] = persisted(
       Persist.global("server", ["server.v3"]),
       createStore({
         list: [] as string[],
+        currentSidecarUrl: "",
         projects: {} as Record<string, StoredProject[]>,
         lastProject: {} as Record<string, string>,
         auth: {} as Record<string, StoredAuth>,
@@ -48,20 +50,40 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     })
 
     const healthy = () => state.healthy
+    const defaultUrl = () => normalizeServerUrl(props.defaultUrl)
 
-    function setActive(input: string) {
-      const url = normalizeServerUrl(input)
-      if (!url) return
-      setState("active", url)
+    function reconcileStartup() {
+      const fallback = defaultUrl()
+      if (!fallback) return
+
+      const previousSidecarUrl = normalizeServerUrl(store.currentSidecarUrl)
+      const list = previousSidecarUrl ? store.list.filter((url) => url !== previousSidecarUrl) : store.list
+      if (!props.isSidecar) {
+        batch(() => {
+          setStore("list", list)
+          if (store.currentSidecarUrl) setStore("currentSidecarUrl", "")
+          setState("active", fallback)
+        })
+        return
+      }
+
+      const nextList = list.includes(fallback) ? list : [...list, fallback]
+      batch(() => {
+        setStore("list", nextList)
+        setStore("currentSidecarUrl", fallback)
+        setState("active", fallback)
+      })
     }
 
-    function add(input: string) {
-      const url = normalizeServerUrl(input)
-      if (!url) return
-
-      const fallback = normalizeServerUrl(props.defaultUrl)
-      if (fallback && url === fallback) {
-        setState("active", url)
+    function updateServerList(url: string, remove = false) {
+      if (remove) {
+        const list = store.list.filter((x) => x !== url)
+        const next = state.active === url ? (list[0] ?? defaultUrl() ?? "") : state.active
+        batch(() => {
+          setStore("list", list)
+          setStore("auth", url, undefined!)
+          setState("active", next)
+        })
         return
       }
 
@@ -73,18 +95,22 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       })
     }
 
+    function setActive(input: string) {
+      const url = normalizeServerUrl(input)
+      if (!url) return
+      setState("active", url)
+    }
+
+    function add(input: string) {
+      const url = normalizeServerUrl(input)
+      if (!url) return
+      updateServerList(url)
+    }
+
     function remove(input: string) {
       const url = normalizeServerUrl(input)
       if (!url) return
-
-      const list = store.list.filter((x) => x !== url)
-      const next = state.active === url ? (list[0] ?? normalizeServerUrl(props.defaultUrl) ?? "") : state.active
-
-      batch(() => {
-        setStore("list", list)
-        setStore("auth", url, undefined!)
-        setState("active", next)
-      })
+      updateServerList(url, true)
     }
 
     function authHeader(input?: string) {
@@ -99,9 +125,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     createEffect(() => {
       if (!ready()) return
       if (state.active) return
-      const url = normalizeServerUrl(props.defaultUrl)
-      if (!url) return
-      setState("active", url)
+      reconcileStartup()
     })
 
     createEffect(() => {
@@ -154,7 +178,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       }
 
       run()
-      const interval = setInterval(run, 10_000)
+      const interval = setInterval(run, HEALTH_POLL_INTERVAL_MS)
 
       onCleanup(() => {
         alive = false
