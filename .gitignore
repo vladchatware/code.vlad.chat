@@ -27,4 +27,4 @@ target
 opencode-dev
 logs/
 *.bun-build
-.vercel
+tsconfig.tsbuildinfo

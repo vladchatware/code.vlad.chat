@@ -21,6 +21,8 @@ import { Auth } from "../auth"
 import { Flag } from "../flag/flag"
 import { Command } from "../command"
 import { Global } from "../global"
+import { WorkspaceContext } from "../control-plane/workspace-context"
+import { WorkspaceRouterMiddleware } from "../control-plane/workspace-router-middleware"
 import { ProjectRoutes } from "./routes/project"
 import { SessionRoutes } from "./routes/session"
 import { PtyRoutes } from "./routes/pty"
@@ -200,6 +202,7 @@ export namespace Server {
         )
         .use(async (c, next) => {
           if (c.req.path === "/log") return next()
+          const workspaceID = c.req.query("workspace") || c.req.header("x-opencode-workspace")
           const raw = c.req.query("directory") || c.req.header("x-opencode-directory") || process.cwd()
           const directory = (() => {
             try {
@@ -208,14 +211,21 @@ export namespace Server {
               return raw
             }
           })()
-          return Instance.provide({
-            directory,
-            init: InstanceBootstrap,
+
+          return WorkspaceContext.provide({
+            workspaceID,
             async fn() {
-              return next()
+              return Instance.provide({
+                directory,
+                init: InstanceBootstrap,
+                async fn() {
+                  return next()
+                },
+              })
             },
           })
         })
+        .use(WorkspaceRouterMiddleware)
         .get(
           "/doc",
           openAPIRouteHandler(app, {
@@ -229,7 +239,15 @@ export namespace Server {
             },
           }),
         )
-        .use(validator("query", z.object({ directory: z.string().optional() })))
+        .use(
+          validator(
+            "query",
+            z.object({
+              directory: z.string().optional(),
+              workspace: z.string().optional(),
+            }),
+          ),
+        )
         .route("/project", ProjectRoutes())
         .route("/pty", PtyRoutes())
         .route("/config", ConfigRoutes())
@@ -507,6 +525,8 @@ export namespace Server {
           }),
           async (c) => {
             log.info("event connected")
+            c.header("X-Accel-Buffering", "no")
+            c.header("X-Content-Type-Options", "nosniff")
             return streamSSE(c, async (stream) => {
               stream.writeSSE({
                 data: JSON.stringify({
@@ -523,7 +543,7 @@ export namespace Server {
                 }
               })
 
-              // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
+              // Send heartbeat every 10s to prevent stalled proxy streams.
               const heartbeat = setInterval(() => {
                 stream.writeSSE({
                   data: JSON.stringify({
@@ -531,7 +551,7 @@ export namespace Server {
                     properties: {},
                   }),
                 })
-              }, 30000)
+              }, 10_000)
 
               await new Promise<void>((resolve) => {
                 stream.onAbort(() => {
